@@ -1,4 +1,4 @@
-// Copyright 1996-2021 Cyberbotics Ltd.
+// Copyright 1996-2022 Cyberbotics Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,11 +15,15 @@
 #include "WbTokenizer.hpp"
 
 #include "WbApplicationInfo.hpp"
+#include "WbFileUtil.hpp"
 #include "WbLog.hpp"
+#include "WbNetwork.hpp"
 #include "WbProtoTemplateEngine.hpp"
+#include "WbStandardPaths.hpp"
 #include "WbToken.hpp"
 
 #include <QtCore/QFile>
+#include <QtCore/QStandardPaths>
 #include <QtCore/QStringList>
 #include <QtCore/QTextStream>
 
@@ -91,14 +95,14 @@ void WbTokenizer::markTokenStart() {
   mTokenColumn = mColumn;
 }
 
-void WbTokenizer::displayHeaderHelp(QString fileName, QString headerTag) {
+void WbTokenizer::displayHeaderHelp(const QString &fileName, const QString &headerTag) {
   const WbVersion &v = WbApplicationInfo::version();
   WbLog::info(
     QObject::tr("Please modify the first line of '%1' to \"#%2 %3 utf8\".").arg(fileName).arg(headerTag).arg(v.toString(false)),
     false, WbLog::PARSING);
 }
 
-bool WbTokenizer::readFileInfo(bool headerRequired, bool displayWarning, QString headerTag, bool isProto) {
+bool WbTokenizer::readFileInfo(bool headerRequired, bool displayWarning, const QString &headerTag, bool isProto) {
   // reset version
   const WbVersion &webotsVersion = WbApplicationInfo::version();
   mFileVersion = webotsVersion;
@@ -118,7 +122,7 @@ bool WbTokenizer::readFileInfo(bool headerRequired, bool displayWarning, QString
     }
   }
 
-  // this step can be removed when Lua support is dropped, but is necessary for two different tokens to cohexist as tokenizer
+  // this step can be removed when Lua support is dropped, but is necessary for two different tokens to coexist as tokenizer
   // functions like ReadWord need to adapt the tokens to the context.
   if (isProto) {
     bool isLua = true;
@@ -170,6 +174,9 @@ bool WbTokenizer::readFileInfo(bool headerRequired, bool displayWarning, QString
     for (int i = 1; i < splittedInfo.size(); ++i)
       mInfo.append(splittedInfo[i].trimmed() + '\n');
     mInfo.chop(1);  // remove last '\n'
+
+    if (mFileType == MODEL)
+      return true;
 
     // do a forward compatibility test based on the file and webots versions without the maintenance id
     WbVersion forwardCompatiblityFileVersion = mFileVersion;
@@ -317,7 +324,7 @@ QString WbTokenizer::readWord() {
     int commentCharIndex = 0;  // count consecutive '-' characters
     bool shortComment = false;
     bool longComment = false;
-    QChar stringStart = 0;
+    QChar stringStart = '\0';
     int finalEscapeCharactersCount = 0;
     while (!word.endsWith(close)) {
       mChar = readChar();
@@ -358,10 +365,10 @@ QString WbTokenizer::readWord() {
 
       if (!shortComment && !longComment) {
         if (stringStart == mChar && finalEscapeCharactersCount % 2 == 0)
-          stringStart = 0;
-        else if (stringStart == 0 && (mChar == "'" || mChar == "\""))
+          stringStart = '\0';
+        else if (stringStart == '\0' && (mChar == '\'' || mChar == '\"'))
           stringStart = mChar;
-        if (mChar == "\\")
+        if (mChar == '\\')
           finalEscapeCharactersCount += 1;
         else
           finalEscapeCharactersCount = 0;
@@ -389,7 +396,7 @@ QString WbTokenizer::readWord() {
   return word;
 }
 
-int WbTokenizer::tokenize(const QString &fileName) {
+int WbTokenizer::tokenize(const QString &fileName, const QString &prefix) {
   mFileName = fileName;
   mFileType = fileTypeFromFileName(fileName);
   mIndex = 0;
@@ -400,7 +407,12 @@ int WbTokenizer::tokenize(const QString &fileName) {
     return 1;
   }
 
-  mStream = new QTextStream(&file);
+  // if a prefix is provided, alter all webots:// with it
+  QByteArray contents = file.readAll();
+  if (!prefix.isEmpty() && prefix != "webots://")
+    contents.replace(QString("webots://").toUtf8(), prefix.toUtf8());
+
+  mStream = new QTextStream(contents);
   if (mStream->atEnd()) {
     WbLog::error(QObject::tr("File is empty: '%1'.").arg(mFileName), false, WbLog::PARSING);
     return 1;
@@ -523,7 +535,7 @@ const QString WbTokenizer::documentationUrl() const {
 }
 
 void WbTokenizer::reportError(const QString &message, int line, int column) const {
-  QString prefix = mErrorPrefix.isEmpty() ? mFileName : mErrorPrefix;
+  const QString prefix = mFileName.isEmpty() ? mReferralFile : mFileName;
   if (prefix.isEmpty())
     WbLog::error(QObject::tr("%1.").arg(message), false, WbLog::PARSING);
   else
@@ -539,18 +551,24 @@ void WbTokenizer::reportError(const QString &message, const WbToken *token) cons
 }
 
 void WbTokenizer::reportFileError(const QString &message) const {
-  QString prefix = mErrorPrefix.isEmpty() ? mFileName : mErrorPrefix;
+  const QString prefix = mFileName.isEmpty() ? mReferralFile : mFileName;
   WbLog::error(QObject::tr("'%1': error: %2.").arg(prefix, message), false, WbLog::PARSING);
 }
 
 WbTokenizer::FileType WbTokenizer::fileTypeFromFileName(const QString &fileName) {
-  if (fileName.endsWith(".wbt"))
+  QString name = fileName;
+  if (WbFileUtil::isLocatedInDirectory(fileName, WbStandardPaths::cachedAssetsPath())) {
+    // attempting to tokenize a cached file, determine its original format from the ephemeral cache representation
+    name = WbNetwork::instance()->getUrlFromEphemeralCache(fileName);
+  }
+
+  if (name.endsWith(".wbt", Qt::CaseInsensitive))
     return WORLD;
-  else if (fileName.endsWith(".proto"))
+  else if (name.endsWith(".proto", Qt::CaseInsensitive))
     return PROTO;
-  else if (fileName.endsWith(".wbo"))
+  else if (name.endsWith(".wbo", Qt::CaseInsensitive))
     return OBJECT;
-  else if (fileName.endsWith(".wrl"))
+  else if (name.endsWith(".wrl", Qt::CaseInsensitive))
     return MODEL;
   else
     return UNKNOWN;

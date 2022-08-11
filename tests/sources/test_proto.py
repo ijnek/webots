@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright 1996-2021 Cyberbotics Ltd.
+# Copyright 1996-2022 Cyberbotics Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,8 +31,6 @@ class TestProtos(unittest.TestCase):
         self.protoFiles = []
         for directory in ['projects', 'resources']:
             for rootPath, dirNames, fileNames in os.walk(os.environ['WEBOTS_HOME'] + os.sep + directory):
-                if rootPath[-7:] != os.path.sep + 'protos' and os.path.sep + 'protos' + os.path.sep not in rootPath:
-                    continue
                 for fileName in fnmatch.filter(fileNames, '*.proto'):
                     self.protos.append(fileName)
                     if fileName not in self.protoPath:

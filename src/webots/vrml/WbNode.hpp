@@ -1,4 +1,4 @@
-// Copyright 1996-2021 Cyberbotics Ltd.
+// Copyright 1996-2022 Cyberbotics Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -52,7 +52,9 @@ class WbMFColor;
 class WbMFBool;
 class WbMFRotation;
 class WbMFNode;
-class WbVrmlWriter;
+class WbWriter;
+
+struct aiMaterial;
 
 class WbNode : public QObject {
   Q_OBJECT
@@ -176,8 +178,8 @@ public:
   bool isTemplate() const;
   void setRegenerationRequired(bool required);
   bool isRegenerationRequired() const { return mRegenerationRequired; }
+  const QByteArray &protoInstanceTemplateContent() const { return mProtoInstanceTemplateContent; }
   QVector<WbField *> parameters() const { return mParameters; }
-  const QString &protoInstanceFilePath();
   void setProtoInstanceTemplateContent(const QByteArray &content);
   void updateNestedProtoFlag();
 
@@ -197,7 +199,7 @@ public:
   QStringList listTextureFiles() const;
 
   // write node and fields as text
-  virtual void write(WbVrmlWriter &writer) const;
+  virtual void write(WbWriter &writer) const;
   static void enableDefNodeTrackInWrite(bool substituteInStream);
   static void disableDefNodeTrackInWrite();
   static QList<QPair<WbNode *, int>> *externalUseNodesPositionsInWrite();
@@ -268,7 +270,7 @@ public:
   void setInsertionCompleted() { mInsertionCompleted = true; }
 
   // export
-  virtual void exportBoundingObjectToX3D(WbVrmlWriter &writer) const {}
+  virtual void exportBoundingObjectToX3D(WbWriter &writer) const {}
   virtual QStringList fieldsToSynchronizeWithX3D() const { return QStringList(); }
 
   virtual void reset(const QString &id);
@@ -278,7 +280,6 @@ public:
   // debug utility functions
   // void printDebugNodeStructure(int level = 0);
   // void printDebugNodeFields(int level, bool printParameters);
-  const WbNode *findRobotRootNode() const;
   virtual const bool isRobot() const { return false; };
 
 signals:
@@ -300,23 +301,28 @@ protected:
   // copies all the field values
   WbNode(const WbNode &other);
 
+  // constructor for shallow nodes, should be used exclusively by the CadShape node
+  WbNode(const QString &modelName, const aiMaterial *material);
+  bool mIsShallowNode;
+
   // DEF-USE dictionary
   static bool cUpdatingDictionary;  // This flag orders to skip any DEF->USEs update when updating the dictionary
 
-  virtual void writeExport(WbVrmlWriter &writer) const;
-  virtual void writeParameters(WbVrmlWriter &writer) const;
+  virtual void writeExport(WbWriter &writer) const;
+  virtual void writeParameters(WbWriter &writer) const;
   virtual void readHiddenKinematicParameter(WbField *field) {}
 
-  virtual bool exportNodeHeader(WbVrmlWriter &writer) const;
-  virtual void exportNodeContents(WbVrmlWriter &writer) const;
-  virtual void exportNodeFields(WbVrmlWriter &writer) const;
-  virtual void exportNodeSubNodes(WbVrmlWriter &writer) const;
-  virtual void exportNodeFooter(WbVrmlWriter &writer) const;
+  virtual bool exportNodeHeader(WbWriter &writer) const;
+  virtual void exportNodeContents(WbWriter &writer) const;
+  virtual void exportNodeFields(WbWriter &writer) const;
+  virtual void exportNodeSubNodes(WbWriter &writer) const;
+  virtual void exportNodeFooter(WbWriter &writer) const;
+  virtual void exportExternalSubProto(WbWriter &writer) const;
 
   // Methods related to URDF export
-  WbNode *findUrdfLinkRoot() const;     // Finds first upper Webots node that is considered as URDF link
-  virtual bool isUrdfRootLink() const;  // Determines whether the Webots node is considered as URDF link as well
-  virtual void exportURDFJoint(WbVrmlWriter &writer) const {};
+  const WbNode *findUrdfLinkRoot() const;  // Finds first upper Webots node that is considered as URDF link
+  virtual bool isUrdfRootLink() const;     // Determines whether the Webots node is considered as URDF link as well
+  virtual void exportUrdfJoint(WbWriter &writer) const {};
 
   virtual void useNodesChanged() const {};
   bool isNestedProtoNode() const { return mIsNestedProtoNode; }
@@ -355,7 +361,6 @@ private:
   // for proto instances only
   WbProtoModel *mProto;
   QVector<WbField *> mParameters;
-  QString mProtoInstanceFilePath;
   QByteArray mProtoInstanceTemplateContent;
   bool mRegenerationRequired;
 
@@ -401,6 +406,7 @@ private:
   WbField *findSubField(int index, WbNode *&parent) const;
   void readFieldValue(WbField *field, WbTokenizer *tokenizer, const QString &worldPath) const;
   static void copyAliasValue(WbField *field, const QString &alias);
+  void addExternProtoFromFile(const WbProtoModel *proto, WbWriter &writer) const;
 };
 
 #endif

@@ -1,4 +1,4 @@
-// Copyright 1996-2021 Cyberbotics Ltd.
+// Copyright 1996-2022 Cyberbotics Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 #include "WbAbstractCamera.hpp"
 #include "WbApplication.hpp"
+#include "WbDataStream.hpp"
 #include "WbDevice.hpp"
 #include "WbDictionary.hpp"
 #include "WbField.hpp"
@@ -379,8 +380,11 @@ void WbSupervisorUtilities::processImmediateMessages(bool blockRegeneration) {
   mFieldSetRequests.clear();
   if (blockRegeneration)
     return;
+
   WbTemplateManager::instance()->blockRegeneration(false);
-  emit worldModified();
+  // only emit if robot still exists (FieldSetRequest could have regenerated it)
+  if (WbWorld::instance()->robots().contains(mRobot))
+    emit worldModified();
 }
 
 void WbSupervisorUtilities::postPhysicsStep() {
@@ -1476,7 +1480,7 @@ void WbSupervisorUtilities::handleMessage(QDataStream &stream) {
           if (filename.endsWith(".wrl", Qt::CaseInsensitive))
             WbNodeOperations::instance()->importVrml(filename, true);
           else if (filename.endsWith(".wbo", Qt::CaseInsensitive))
-            WbNodeOperations::instance()->importNode(nodeId, fieldId, index, filename, "", true);
+            WbNodeOperations::instance()->importNode(nodeId, fieldId, index, filename, WbNodeOperations::FROM_SUPERVISOR, "");
           else
             assert(false);
           break;
@@ -1485,7 +1489,7 @@ void WbSupervisorUtilities::handleMessage(QDataStream &stream) {
           QString filename = readString(stream);
           makeFilenameAbsolute(filename);
           if (filename.endsWith(".wbo", Qt::CaseInsensitive))
-            WbNodeOperations::instance()->importNode(nodeId, fieldId, index, filename, "", true);
+            WbNodeOperations::instance()->importNode(nodeId, fieldId, index, filename, WbNodeOperations::FROM_SUPERVISOR, "");
           else
             assert(false);
           const WbSFNode *sfNode = dynamic_cast<WbSFNode *>(field->value());
@@ -1512,7 +1516,7 @@ void WbSupervisorUtilities::handleMessage(QDataStream &stream) {
       // apply queued set field operations
       processImmediateMessages(true);
 
-      WbNodeOperations::instance()->importNode(nodeId, fieldId, index, "", nodeString, true);
+      WbNodeOperations::instance()->importNode(nodeId, fieldId, index, "", WbNodeOperations::FROM_SUPERVISOR, nodeString);
       const WbField *field = WbNode::findNode(nodeId)->field(fieldId);
       const WbSFNode *sfNode = dynamic_cast<WbSFNode *>(field->value());
       mImportedNodeId = sfNode && sfNode->value() ? sfNode->value()->uniqueId() : -1;
@@ -1525,6 +1529,18 @@ void WbSupervisorUtilities::handleMessage(QDataStream &stream) {
       unsigned int nodeId;
       stream >> nodeId;
       WbNode *node = WbNode::findNode(nodeId);
+
+      // as findNode might return the internal one, it's necessary to climb the ladder up to the protoParameterNode otherwise
+      // the scene tree will not be refreshed when deleting it
+      while (node && node->protoParameterNode())
+        node = node->protoParameterNode();
+
+      if (!WbNodeUtilities::isVisible(node)) {
+        mRobot->warn(
+          tr("Node '%1' is internal to a PROTO and therefore cannot be deleted from a Supervisor.").arg(node->modelName()));
+        return;
+      }
+
       if (node) {
         if (node == mRobot)
           mShouldRemoveNode = true;
@@ -1642,7 +1658,7 @@ void WbSupervisorUtilities::handleMessage(QDataStream &stream) {
   }
 }
 
-void WbSupervisorUtilities::writeNode(QDataStream &stream, const WbBaseNode *baseNode, int messageType) {
+void WbSupervisorUtilities::writeNode(WbDataStream &stream, const WbBaseNode *baseNode, int messageType) {
   assert(baseNode);
   stream << (int)baseNode->uniqueId();
   stream << (int)baseNode->nodeType();
@@ -1658,7 +1674,7 @@ void WbSupervisorUtilities::writeNode(QDataStream &stream, const WbBaseNode *bas
     connect(baseNode, &WbNode::defUseNameChanged, this, &WbSupervisorUtilities::notifyNodeUpdate, Qt::UniqueConnection);
 }
 
-void WbSupervisorUtilities::pushSingleFieldContentToStream(QDataStream &stream, WbField *field) {
+void WbSupervisorUtilities::pushSingleFieldContentToStream(WbDataStream &stream, WbField *field) {
   switch (field->type()) {
     case WB_SF_BOOL: {
       bool v = dynamic_cast<WbSFBool *>(field->value())->value();
@@ -1724,7 +1740,7 @@ void WbSupervisorUtilities::pushSingleFieldContentToStream(QDataStream &stream, 
   }
 }
 
-void WbSupervisorUtilities::pushRelativePoseToStream(QDataStream &stream, WbTransform *fromNode, WbTransform *toNode) {
+void WbSupervisorUtilities::pushRelativePoseToStream(WbDataStream &stream, WbTransform *fromNode, WbTransform *toNode) {
   WbMatrix4 m;
 
   WbMatrix4 mTo(toNode->matrix());
@@ -1753,7 +1769,7 @@ void WbSupervisorUtilities::pushRelativePoseToStream(QDataStream &stream, WbTran
   stream << (double)m(3, 0) << (double)m(3, 1) << (double)m(3, 2) << (double)m(3, 3);
 }
 
-void WbSupervisorUtilities::pushContactPointsToStream(QDataStream &stream, WbSolid *solid, int solidId,
+void WbSupervisorUtilities::pushContactPointsToStream(WbDataStream &stream, WbSolid *solid, int solidId,
                                                       bool includeDescendants) {
   const QVector<WbVector3> &contactPoints = solid->computedContactPoints(includeDescendants);
   const QVector<const WbSolid *> &solids = solid->computedSolidPerContactPoints();
@@ -1772,7 +1788,7 @@ void WbSupervisorUtilities::pushContactPointsToStream(QDataStream &stream, WbSol
   }
 }
 
-void WbSupervisorUtilities::writeAnswer(QDataStream &stream) {
+void WbSupervisorUtilities::writeAnswer(WbDataStream &stream) {
   if (!mUpdatedNodeIds.isEmpty()) {
     foreach (int id, mUpdatedNodeIds) {
       const WbBaseNode *baseNode = dynamic_cast<const WbBaseNode *>(WbNode::findNode(id));
@@ -2101,7 +2117,7 @@ void WbSupervisorUtilities::writeAnswer(QDataStream &stream) {
   }
 }
 
-void WbSupervisorUtilities::writeConfigure(QDataStream &stream) {
+void WbSupervisorUtilities::writeConfigure(WbDataStream &stream) {
   WbNode *selfNode = mRobot;
   while (selfNode->protoParameterNode())
     selfNode = selfNode->protoParameterNode();

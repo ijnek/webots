@@ -1,4 +1,4 @@
-// Copyright 1996-2021 Cyberbotics Ltd.
+// Copyright 1996-2022 Cyberbotics Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -77,7 +77,7 @@ inline double WbMathsUtilities::clampedAcos(double value) {
   if (value >= 1.0)
     return 0.0;
   if (value <= -1.0)
-    return 2.0 * M_PI;
+    return M_PI;
   return acos(value);
 }
 

@@ -1,6 +1,0 @@
-numpy
-pandas
-tabulate
-transforms3d
-trimesh
-pyglet

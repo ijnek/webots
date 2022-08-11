@@ -65,14 +65,14 @@ Derived from [Robot](../reference/robot.md).
 ```
 Thymio2 {
   SFVec3f    translation     0 0 0
-  SFRotation rotation        0 1 0 0
+  SFRotation rotation        0 0 1 0
   SFString   name            "Thymio II"
   SFString   controller      "thymio2_aseba"
   MFString   controllerArgs  "port=33333"
   SFString   customData      ""
   SFBool     supervisor      FALSE
   SFBool     synchronization TRUE
-  SFString   window          ""
+  SFString   window          "<generic>"
   SFString   contactMaterial "thymio body"
   SFBool     castLight       TRUE
   MFNode     bodySlot        []
@@ -114,7 +114,7 @@ This value can be modified by editing the `Thymio2::controllerArgs` field.
 
 The Thymio II window (see the [figure](#thymio-ii-robot-window)) can help you to raise some events easily.
 These events are mainly useful when using the VPL for Thymio II software.
-To open the Thymio II window, just double click on the 3D model of the robot.
+To open the Thymio II window, select the "Show Robot Window" option in the robot [context menu](the-3d-window.md#context-menu).
 
 %figure "Thymio II robot window"
 

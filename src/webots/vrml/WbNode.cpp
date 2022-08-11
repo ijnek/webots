@@ -1,4 +1,4 @@
-// Copyright 1996-2021 Cyberbotics Ltd.
+// Copyright 1996-2022 Cyberbotics Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,11 +26,13 @@
 #include "WbMFString.hpp"
 #include "WbMFVector2.hpp"
 #include "WbMFVector3.hpp"
+#include "WbNetwork.hpp"
 #include "WbNodeFactory.hpp"
 #include "WbNodeModel.hpp"
 #include "WbNodeReader.hpp"
 #include "WbParser.hpp"
 #include "WbProject.hpp"
+#include "WbProtoManager.hpp"
 #include "WbProtoModel.hpp"
 #include "WbSFBool.hpp"
 #include "WbSFColor.hpp"
@@ -44,13 +46,14 @@
 #include "WbStandardPaths.hpp"
 #include "WbToken.hpp"
 #include "WbTokenizer.hpp"
-#include "WbVrmlWriter.hpp"
+#include "WbUrl.hpp"
+#include "WbWriter.hpp"
 
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSet>
-#include <QtCore/QTemporaryFile>
+#include <QtCore/QUrl>
 
 #include <cassert>
 
@@ -148,6 +151,7 @@ void WbNode::init() {
     // nodes in .proto files are created with mUniqueId = -1
     mUniqueId = -1;
 
+  mIsShallowNode = false;
   mDefNode = NULL;
   mHasUseAncestor = false;
   setParentNode(gParent);
@@ -163,6 +167,17 @@ void WbNode::init() {
   mIsTopParameterDescendant = false;
   mProto = NULL;
   mCurrentStateId = "__init__";
+}
+
+// special constructor for shallow nodes, it's used by CadShape to instantiate PBRAppearances from an assimp material in
+// order to configure the WREN materials. Shallow nodes are invisible but persistent, and due to their incompleteness should not
+// be modified or interacted with in any other way other than through the creation and destruction of CadShape nodes
+WbNode::WbNode(const QString &modelName, const aiMaterial *material) {
+  mModel = WbNodeModel::findModel(modelName);
+  init();
+  mIsShallowNode = true;
+  mUniqueId = -2;
+  mParentNode = NULL;
 }
 
 WbNode::WbNode(const QString &modelName, const QString &worldPath, WbTokenizer *tokenizer) :
@@ -191,7 +206,6 @@ WbNode::WbNode(const WbNode &other) :
   mModel(other.mModel),
   mDefName(other.mDefName),
   mUseName(other.mUseName),
-  mProtoInstanceFilePath(other.mProtoInstanceFilePath),
   mProtoInstanceTemplateContent(other.mProtoInstanceTemplateContent) {
   init();
   if (gRestoreUniqueIdOnClone)
@@ -294,9 +308,10 @@ WbNode::WbNode(const WbNode &other) :
 
       // connect fields to PROTO parameters
       if (gInstantiateMode) {
-        if (!mIsNestedProtoNode || !mIsProtoDescendant)
+        if (!mIsNestedProtoNode || !mIsProtoDescendant) {
           foreach (WbField *parameter, mParameters)
             redirectAliasedFields(parameter, this, other.mProto->isDerived());
+        }
       }
 
       gProtoParameterNodeFlag = previousProtoParameterFlag;
@@ -345,10 +360,6 @@ WbNode::~WbNode() {
     foreach (WbNode *const useNode, mUseNodes)
       useNode->setDefNode(NULL);
   }
-
-  // delete the PROTO instance temporary file if any
-  if (!mProtoInstanceFilePath.isEmpty() && QFile::exists(mProtoInstanceFilePath))
-    QFile::remove(mProtoInstanceFilePath);
 }
 
 const QString &WbNode::modelName() const {
@@ -445,6 +456,9 @@ const QString &WbNode::nodeModelName() const {
 }
 
 QString WbNode::fullPath(const QString &fieldName, QString &parameterName) const {
+  if (mIsShallowNode)
+    return "";
+
   const WbNode *n = this;
   WbField *field = NULL;
   if (!fieldName.isEmpty())
@@ -481,13 +495,11 @@ QString WbNode::fullPath(const QString &fieldName, QString &parameterName) const
 QString WbNode::extractFieldName(const QString &message) const {
   // extract field name
   QString fieldName;
-  QRegularExpression regExp("'(\\w)+'");
-  QRegularExpressionMatch match = regExp.match(message);
+  QRegularExpressionMatch match = QRegularExpression("'(\\w)+'").match(message);
   if (match.hasMatch()) {
-    fieldName = match.captured(0);
+    fieldName = match.captured();
     fieldName = fieldName.mid(1, fieldName.length() - 2);  // remove single quotes
   }
-
   return fieldName;
 }
 
@@ -806,7 +818,7 @@ void WbNode::notifyParameterChanged() {
 
 int WbNode::findSubFieldIndex(const WbField *const searched) const {
   int count = 0;
-  QList<WbNode *> list(subNodes(true, false, false));
+  QList<WbNode *> list(subNodes(true, true, false));
   list.prepend(const_cast<WbNode *>(this));
   foreach (WbNode *const node, list) {
     foreach (WbField *const field, node->mFields) {
@@ -820,7 +832,7 @@ int WbNode::findSubFieldIndex(const WbField *const searched) const {
 
 WbField *WbNode::findSubField(int index, WbNode *&parent) const {
   int count = 0;
-  QList<WbNode *> list(subNodes(true, false, false));
+  QList<WbNode *> list(subNodes(true, true, false));
   list.prepend(const_cast<WbNode *>(this));
   foreach (WbNode *const node, list) {
     foreach (WbField *const field, node->mFields) {
@@ -935,9 +947,18 @@ void WbNode::readFields(WbTokenizer *tokenizer, const QString &worldPath) {
       if (tokenizer->peekWord() == "IS") {
         tokenizer->skipToken("IS");
         const QString &alias = tokenizer->nextWord();
-        // qDebug() << field->name() << "->" << alias;
-        field->setAlias(alias);
-        copyAliasValue(field, alias);
+        bool exists = false;
+        foreach (WbField *p, *(gProtoParameterList.last()->params)) {
+          if (p->name() == alias) {
+            exists = true;
+            break;
+          }
+        }
+        if (exists) {
+          field->setAlias(alias);
+          copyAliasValue(field, alias);
+        } else
+          parsingWarn(tr("Field IS reference '%1' has no matching PROTO parameter.").arg(alias));
       } else {
         // field->readValue(tokenizer);
         readFieldValue(field, tokenizer, worldPath);
@@ -967,7 +988,7 @@ QList<QPair<WbNode *, int>> *WbNode::externalUseNodesPositionsInWrite() {
   return gExternalUseNodesInWrite;
 }
 
-void WbNode::writeParameters(WbVrmlWriter &writer) const {
+void WbNode::writeParameters(WbWriter &writer) const {
   foreach (WbField *parameter, parameters())
     parameter->write(writer);
 }
@@ -976,23 +997,15 @@ bool WbNode::isUrdfRootLink() const {
   return findSFString("name") ? true : false;
 }
 
-WbNode *WbNode::findUrdfLinkRoot() const {
-  WbNode *parentRoot = parentNode();
-  while (!parentRoot->isUrdfRootLink()) {
+const WbNode *WbNode::findUrdfLinkRoot() const {
+  const WbNode *parentRoot = parentNode();
+  while (parentRoot && !parentRoot->isUrdfRootLink())
     parentRoot = parentRoot->parentNode();
-    if (parentRoot == NULL)
-      return NULL;
-  }
+
   return parentRoot;
 }
 
-void WbNode::write(WbVrmlWriter &writer) const {
-  if (uniqueId() == -1) {
-    if (nodeModelName() == "Plane" || nodeModelName() == "Capsule") {
-      WbNodeFactory::instance()->exportAsVrml(this, writer);
-      return;
-    }
-  }
+void WbNode::write(WbWriter &writer) const {
   if (writer.isUrdf()) {
     // Start naming from scratch
     if (isRobot()) {
@@ -1018,7 +1031,7 @@ void WbNode::write(WbVrmlWriter &writer) const {
     }
     return;
   }
-  if (writer.isX3d() || writer.isVrml() || (writer.isProto() && (!writer.rootNode() || this == writer.rootNode()))) {
+  if (writer.isX3d() || (writer.isProto() && (!writer.rootNode() || this == writer.rootNode()))) {
     writeExport(writer);
     return;
   }
@@ -1052,7 +1065,7 @@ void WbNode::write(WbVrmlWriter &writer) const {
     writeParameters(writer);
   else
     foreach (WbField *field, fields())
-      if (!field->isDeprecated() && (!writer.isVrml() || field->isVrml()))
+      if (!field->isDeprecated())
         field->write(writer);
 
   writer.decreaseIndent();
@@ -1082,11 +1095,8 @@ QStringList WbNode::listTextureFiles() const {
     } else if (imageTexture && field->value()->type() == WB_MF_STRING && field->name() == "url") {
       WbNode *proto = protoAncestor();
       QString protoPath;
-      if (proto) {
-        WbProtoModel *protoModel = proto->proto();
-        QFileInfo fileInfo(protoModel->fileName());
-        protoPath = fileInfo.path() + "/";
-      }
+      if (proto)
+        protoPath = proto->proto()->path();
       WbMFString *mfstring = dynamic_cast<WbMFString *>(field->value());
       for (int i = 0; i < mfstring->size(); i++) {
         const QString &textureFile = mfstring->item(i);
@@ -1123,7 +1133,7 @@ const QString WbNode::urdfName() const {
   return fullName;
 }
 
-bool WbNode::exportNodeHeader(WbVrmlWriter &writer) const {
+bool WbNode::exportNodeHeader(WbWriter &writer) const {
   if (writer.isX3d())  // actual export is done in WbBaseNode
     return false;
   else if (writer.isUrdf()) {
@@ -1142,19 +1152,17 @@ bool WbNode::exportNodeHeader(WbVrmlWriter &writer) const {
     writer << "USE " << mUseName << "\n";
     return true;
   }
-  if (writer.isVrml())
-    writer << fullVrmlName();
-  else {
-    if (isDefNode())
-      writer << "DEF " << defName() << " ";
-    writer << nodeModelName();
-  }
+
+  if (isDefNode())
+    writer << "DEF " << defName() << " ";
+  writer << nodeModelName();
+
   writer << " {\n";
   writer.increaseIndent();
   return false;
 }
 
-void WbNode::exportNodeFields(WbVrmlWriter &writer) const {
+void WbNode::exportNodeFields(WbWriter &writer) const {
   if (writer.isUrdf())
     return;
 
@@ -1164,7 +1172,7 @@ void WbNode::exportNodeFields(WbVrmlWriter &writer) const {
   }
 }
 
-void WbNode::exportNodeSubNodes(WbVrmlWriter &writer) const {
+void WbNode::exportNodeSubNodes(WbWriter &writer) const {
   foreach (WbField *field, fields()) {
     if (!field->isDeprecated() &&
         ((field->isVrml() || writer.isProto() || writer.isUrdf()) && field->singleType() == WB_SF_NODE)) {
@@ -1179,7 +1187,7 @@ void WbNode::exportNodeSubNodes(WbVrmlWriter &writer) const {
   }
 }
 
-void WbNode::exportNodeFooter(WbVrmlWriter &writer) const {
+void WbNode::exportNodeFooter(WbWriter &writer) const {
   if (writer.isX3d())
     writer << "</" << x3dName() << ">";
   else if (writer.isUrdf()) {
@@ -1195,14 +1203,72 @@ void WbNode::exportNodeFooter(WbVrmlWriter &writer) const {
   }
 }
 
-void WbNode::exportNodeContents(WbVrmlWriter &writer) const {
+void WbNode::exportNodeContents(WbWriter &writer) const {
   exportNodeFields(writer);
   if (writer.isX3d())
     writer << ">";
   exportNodeSubNodes(writer);
 }
 
-void WbNode::writeExport(WbVrmlWriter &writer) const {
+void WbNode::exportExternalSubProto(WbWriter &writer) const {
+  if (!isProtoInstance())
+    return;
+
+  addExternProtoFromFile(mProto, writer);
+}
+
+void WbNode::addExternProtoFromFile(const WbProtoModel *proto, WbWriter &writer) const {
+  const QString path =
+    (WbUrl::isWeb(proto->url()) && WbNetwork::isCached(proto->url())) ? WbNetwork::get(proto->url()) : proto->url();
+
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    parsingWarn(tr("File '%1' is not readable.").arg(path));
+    return;
+  }
+
+  QString ancestorName;
+  if (proto->isDerived())
+    ancestorName = proto->ancestorProtoName();
+
+  // check if the root file references external PROTO
+  const QRegularExpression re("^\\s*EXTERNPROTO\\s+\"(.*\\.proto)\"", QRegularExpression::MultilineOption);
+  QRegularExpressionMatchIterator it = re.globalMatch(file.readAll());
+
+  // begin by populating the list of all sub-PROTO
+  while (it.hasNext()) {
+    const QRegularExpressionMatch match = it.next();
+    if (match.hasMatch()) {
+      const QString subProto = match.captured(1);
+      const QString url = path;
+
+      const QString subProtoUrl = WbUrl::combinePaths(subProto, path);
+      if (subProtoUrl.isEmpty())
+        continue;
+
+      if (!subProtoUrl.endsWith(".proto", Qt::CaseInsensitive)) {
+        parsingWarn(tr("Malformed EXTERNPROTO URL. The URL should end with '.proto'."));
+        continue;
+      }
+
+      // sanity check (must either be: relative, absolute, starts with webots://, starts with https://)
+      if (!subProtoUrl.startsWith("https://") && !subProtoUrl.startsWith("webots://") && !QFileInfo(subProtoUrl).isRelative() &&
+          !QFileInfo(subProtoUrl).isAbsolute()) {
+        parsingWarn(tr("Malformed EXTERNPROTO URL. Invalid URL provided: %1.").arg(subProtoUrl));
+        continue;
+      }
+
+      // ensure there's no ambiguity between the declarations
+      const QString subProtoName = QUrl(subProtoUrl).fileName().replace(".proto", "", Qt::CaseInsensitive);
+      writer.trackDeclaration(subProtoName, subProtoUrl);
+      if (!ancestorName.isEmpty() && ancestorName == subProtoName)
+        addExternProtoFromFile(WbProtoManager::instance()->findModel(proto->ancestorProtoName(), "", proto->diskPath()),
+                               writer);
+    }
+  }
+}
+
+void WbNode::writeExport(WbWriter &writer) const {
   assert(!(writer.isX3d() && isProtoParameterNode()));
   if (exportNodeHeader(writer))
     return;
@@ -1210,8 +1276,10 @@ void WbNode::writeExport(WbVrmlWriter &writer) const {
     exportNodeSubNodes(writer);
     exportNodeFooter(writer);
     if (isUrdfRootLink() && nodeModelName() != "Robot")
-      exportURDFJoint(writer);
+      exportUrdfJoint(writer);
   } else {
+    if (writer.isProto() && this == writer.rootNode())
+      exportExternalSubProto(writer);
     exportNodeContents(writer);
     exportNodeFooter(writer);
   }
@@ -1477,14 +1545,17 @@ WbNode *WbNode::createProtoInstance(WbProtoModel *proto, WbTokenizer *tokenizer,
       WbFieldModel *parameterModel = NULL;
       const bool hidden = parameterName == "hidden";
       if (hidden) {
-        static const QRegExp rx1("(_\\d+)+$");  // looks for a substring of the form _7 or _13_1 at the end of the parameter
-                                                // name, e.g. as in rotation_7, position2_13_1
+        static const QRegularExpression rx1("(_\\d+)+$");  // looks for a substring of the form _7 or _13_1 at the end of the
+                                                           // parameter name, e.g. as in rotation_7, position2_13_1
         const QString &hiddenParameterName(tokenizer->peekWord());
-        const int pos1 = rx1.indexIn(hiddenParameterName);
-        static const QRegExp rx2("^[A-Za-z]+\\d?");
-        const int pos2 = rx2.indexIn(hiddenParameterName);
+        // const int pos1 = rx1.indexIn(hiddenParameterName);
+        const QRegularExpressionMatch match1 = rx1.match(hiddenParameterName);
+        static const QRegularExpression rx2("^[A-Za-z]+\\d?");
+        // const int pos2 = rx2.indexIn(hiddenParameterName);
+        const QRegularExpressionMatch match2 = rx2.match(hiddenParameterName);
         tokenizer->ungetToken();
-        if (pos1 != -1 && pos2 != -1 && cHiddenParameterNames.indexOf(rx2.cap(0)) != -1)
+        // if (pos1 != -1 && pos2 != -1 && cHiddenParameterNames.indexOf(rx2.cap(0)) != -1)
+        if (match1.hasMatch() && match2.hasMatch() && cHiddenParameterNames.indexOf(match2.captured()) != -1)
           parameterModel = new WbFieldModel(tokenizer, worldPath);
       } else {
         for (currentParameterIndex = 0; currentParameterIndex < protoFieldModels.size(); ++currentParameterIndex) {
@@ -1792,24 +1863,7 @@ WbNode *WbNode::createProtoInstanceFromParameters(WbProtoModel *proto, const QVe
 }
 
 void WbNode::setProtoInstanceTemplateContent(const QByteArray &content) {
-  if (!mProtoInstanceFilePath.isEmpty() && QFile::exists(mProtoInstanceFilePath))
-    QFile::remove(mProtoInstanceFilePath);
-  mProtoInstanceFilePath.clear();
   mProtoInstanceTemplateContent = content;
-}
-
-const QString &WbNode::protoInstanceFilePath() {
-  if (mProtoInstanceFilePath.isEmpty() && !mProtoInstanceTemplateContent.isEmpty()) {
-    // QTemporaryFile is used to generate a good temporary file name
-    // a reason for this is that the temporary file should exists during all the node life cycle
-    QTemporaryFile tmpFile(QString("%1/%2.XXXXXX.proto").arg(WbStandardPaths::webotsTmpPath()).arg(proto()->name()));
-    tmpFile.open();
-    tmpFile.setAutoRemove(false);
-    tmpFile.write(mProtoInstanceTemplateContent);
-    mProtoInstanceFilePath = tmpFile.fileName();
-    tmpFile.close();
-  }
-  return mProtoInstanceFilePath;
 }
 
 void WbNode::updateNestedProtoFlag() {
@@ -1842,6 +1896,9 @@ void WbNode::setupDescendantAndNestedProtoFlags(QVector<WbField *> fields, bool 
 }
 
 void WbNode::setCreationCompleted() {
+  if (mIsShallowNode)
+    return;
+
   mIsProtoParameterNodeDescendant = isProtoParameterNode();
   mIsCreationCompleted = true;
 }
@@ -2207,15 +2264,12 @@ QStringList WbNode::documentationBookAndPage(bool isRobot) const {
   return mModel->documentationBookAndPage();
 }
 
-const WbNode *WbNode::findRobotRootNode() const {
-  const WbNode *tmpNode = this;
-  while (tmpNode != NULL && !tmpNode->isRobot())
-    tmpNode = tmpNode->parentNode();
-  return tmpNode;
-}
-
 QString WbNode::getUrdfPrefix() const {
-  return findRobotRootNode()->mUrdfPrefix;
+  const WbNode *robotAncestor = this;
+  while (robotAncestor && !robotAncestor->isRobot())
+    robotAncestor = robotAncestor->parentNode();
+
+  return robotAncestor ? robotAncestor->mUrdfPrefix : QString();
 }
 
 /*

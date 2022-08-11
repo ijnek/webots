@@ -1,4 +1,4 @@
-// Copyright 1996-2021 Cyberbotics Ltd.
+// Copyright 1996-2022 Cyberbotics Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,11 +24,14 @@
 
 class WbField;
 class WbNode;
+class WbDownloader;
+
 class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QRegularExpression;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -36,7 +39,7 @@ class WbAddNodeDialog : public QDialog {
   Q_OBJECT
 
 public:
-  enum ActionType { CREATE, IMPORT };
+  enum ActionType { CREATE, IMPORT, EXPORT_PROTO };
 
   explicit WbAddNodeDialog(WbNode *currentNode, WbField *field, int index, QWidget *parent = NULL);
   virtual ~WbAddNodeDialog();
@@ -44,15 +47,18 @@ public:
   ActionType action() const { return mActionType; }
   QString modelName() const;
   QString fileName() const { return mImportFileName; }
-  QString protoFilePath() const;
+  QString protoUrl() const;
   bool isUseNode() const { return mNewNodeType == USE; };
   WbNode *defNode() const;  // returns the closest DEF node above the insertion location which matches the chosen USE name and
                             // avoids infinite recursion
 
-protected:
+public slots:
+  void accept() override;
+
 private slots:
   void updateItemInfo();
   void import();
+  void exportProto();
   void checkAndAddSelectedItem();
   void buildTree();
 
@@ -70,6 +76,7 @@ private:
   QLabel *mLicenseLabel;
   QPlainTextEdit *mInfoText;
   QPushButton *mAddButton;
+  QPushButton *mExportProtoButton;
   QGroupBox *mNodeInfoGroupBox;
   QLineEdit *mFindLineEdit;
   NodeType mNewNodeType;
@@ -80,17 +87,27 @@ private:
   QString mImportFileName;
   bool mIsFolderItemSelected;
 
-  QStringList mUniqueLocalProtoNames;
-  QStringList mUniqueExtraProtoNames;
-  bool mIsAddingLocalProtos;
-  bool mIsAddingExtraProtos;
+  QString mSelectionPath;
 
-  int addProtosFromDirectory(QTreeWidgetItem *parentItem, const QString &dirPath, const QString &regex,
+  QVector<WbDownloader *> mIconDownloaders;
+  bool mRetrievalTriggered;
+
+  QMap<QString, QString> mUniqueLocalProto;
+
+  void downloadIcon(const QString &url);
+
+  int addProtosFromProtoList(QTreeWidgetItem *parentItem, int type, const QRegularExpression &regexp, bool regenerate);
+  int addProtosFromDirectory(QTreeWidgetItem *parentItem, const QString &dirPath, const QRegularExpression &regexp,
                              const QDir &rootDirectory, bool recurse = true, bool inProtos = false);
-  int addProtos(QTreeWidgetItem *parentItem, const QStringList &protoList, const QString &dirPath, const QString &regex,
-                const QDir &rootDirectory);
-  void showNodeInfo(const QString &nodeFileName, NodeType nodeType, const QString &boundingObjectInfo = "");
+  int addProtos(QTreeWidgetItem *parentItem, const QStringList &protoList, const QString &dirPath,
+                const QRegularExpression &regexp, const QDir &rootDirectory);
+  void showNodeInfo(const QString &nodeFileName, NodeType nodeType, int variant = -1, const QString &boundingObjectInfo = "");
   bool doFieldRestrictionsAllowNode(const QString &nodeName) const;
+
+  bool isDeclarationConflicting(const QString &protoName, const QString &url);
+
+private slots:
+  void iconUpdate();
 };
 
 #endif

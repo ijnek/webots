@@ -1,5 +1,5 @@
 /*
- * Copyright 1996-2021 Cyberbotics Ltd.
+ * Copyright 1996-2022 Cyberbotics Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -84,7 +84,7 @@ int main() {
     double target_translation[3] = {target_pose[3], target_pose[7], target_pose[11]};
 
     // center point of the gripper in local (WRIST) coordinates
-    const double center[3] = {0, 0.18, 0};
+    const double center[3] = {0, 0, 0.18};
 
     // change center point from WRIST to world coordinates
 

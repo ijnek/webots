@@ -1,4 +1,4 @@
-// Copyright 1996-2021 Cyberbotics Ltd.
+// Copyright 1996-2022 Cyberbotics Ltd.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 
 class WbDownloader;
 class WbMFString;
+struct aiScene;
 
 class WbMesh : public WbTriangleMeshGeometry {
   Q_OBJECT
@@ -39,25 +40,37 @@ public:
   void postFinalize() override;
   void createResizeManipulator() override;
   void rescale(const WbVector3 &scale) override{};
-  QString path() const;
 
   // WbTriangleMesh management (see WbTriangleMeshCache.hpp)
   uint64_t computeHash() const override;
 
 protected:
-  void exportNodeContents(WbVrmlWriter &writer) const override;
+  void exportNodeFields(WbWriter &writer) const override;
+
+  const QString &vrmlName() const override {
+    static const QString name("Mesh");
+    return name;
+  }
 
 private:
   // user accessible fields
   WbMFString *mUrl;
+  WbSFBool *mCcw;
+  WbSFString *mName;
+  WbSFInt *mMaterialIndex;
+  bool mIsCollada;
   WbDownloader *mDownloader;
 
   WbMesh &operator=(const WbMesh &);  // non copyable
   WbNode *clone() const override { return new WbMesh(*this); }
   void init();
+  bool checkIfNameExists(const aiScene *scene, const QString &name) const;
 
 private slots:
   void updateUrl();
+  void updateCcw();
+  void updateName();
+  void updateMaterialIndex();
   void downloadUpdate();
 };
 

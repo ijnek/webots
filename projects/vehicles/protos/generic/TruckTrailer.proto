@@ -1,9 +1,13 @@
-#VRML_SIM R2021b utf8
+#VRML_SIM R2022b utf8
 # license: Copyright Cyberbotics Ltd. Licensed for use only with Webots.
 # license url: https://cyberbotics.com/webots_assets_license
 # A non-controllable truck trailer model with physics properties.
 # The length and number of wheels is configurable.
 # template language: javascript
+
+EXTERNPROTO "webots://projects/vehicles/protos/generic/TruckRearLight.proto"
+EXTERNPROTO "webots://projects/vehicles/protos/generic/TruckTrailerMesh.proto"
+EXTERNPROTO "webots://projects/vehicles/protos/generic/TruckWheel.proto"
 
 PROTO TruckTrailer [
   field SFString   name             "truck trailer"
@@ -50,7 +54,6 @@ PROTO TruckTrailer [
         # right wheel
         Transform {
           translation -1 0 %<= 2.48 - fields.wheelAxles.value[i] - 0.5 * (fields.length.defaultValue - length) >%
-          rotation 0 0 1 1.5708
           children [
             HingeJoint {
               jointParameters HingeJointParameters {
@@ -75,7 +78,6 @@ PROTO TruckTrailer [
         # left wheel
         Transform {
           translation 1 0 %<= 2.48 - fields.wheelAxles.value[i] - 0.5 * (fields.length.defaultValue - length) >%
-          rotation 0 0 1 -1.5708
           children [
             HingeJoint {
               jointParameters HingeJointParameters {

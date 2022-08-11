@@ -1,4 +1,4 @@
-# Copyright 1996-2021 Cyberbotics Ltd.
+# Copyright 1996-2022 Cyberbotics Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -154,7 +154,7 @@ def process_appearances(supervisor, parameters):
         sys.exit('Multiple definition of ' + protoName)
     protoPath = rootPath + os.sep + protoName
     protoPath = protoPath.replace(os.environ['WEBOTS_HOME'], '')
-    nodeString = 'Transform { translation 0 1 0 rotation 0 0 1 0.262 children [ '
+    nodeString = 'Transform { translation 0 0 1 rotation -1 0 0 0.262 children [ '
     nodeString += 'Shape { '
     nodeString += 'geometry Sphere { subdivision 5 } '
     nodeString += 'castShadows FALSE '
@@ -200,7 +200,7 @@ def process_object(supervisor, category, nodeString, objectDirectory, protoPath,
     supervisorTranslation.setSFVec3f(position)
     supervisorRotation.setSFRotation(viewpointOrientation.getSFRotation())
     # compute distance to the object (assuming object is at the origin) to set a correct near value
-    distance = math.sqrt(math.pow(position[0], 2) + math.pow(position[0], 2) + math.pow(position[0], 2))
+    distance = math.sqrt(math.pow(position[1], 2) + math.pow(position[1], 2) + math.pow(position[1], 2))
     if distance < 1:
         cameraNear.setSFFloat(0.1)
     elif distance < 5:
